@@ -294,7 +294,7 @@ class handler(BaseHTTPRequestHandler):
         try:
             token_data = _exchange_code(code)
         except Exception as e:
-            self._html(_page("OAuth Failed", f"<p>Code exchange failed: <code>{e}</code><br>Try <code>/link</code> again.</p>", is_error=True))
+            self._html(_page("OAuth Failed", f"<p>Discord said: <code>{e}</code></p><p>REDIRECT_URI used: <code>{REDIRECT_URI}</code></p><p>CLIENT_ID used: <code>{CLIENT_ID}</code></p>", is_error=True))
             return
 
         access_token  = token_data.get("access_token")
