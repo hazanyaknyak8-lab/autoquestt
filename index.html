@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Erza Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0304;
+    --bg-well: #140608;
+    --bg-card: #ffffff08;
+    --accent: #c4122f;
+    --accent-soft: #ff6b7a;
+    --accent-dim: #4a0e16;
+    --ink: #f6e9ea;
+    --ink-mid: #c99aa0;
+    --ink-low: #7a4850;
+    --danger: #ff6f6f;
+    --success: #3fe0a5;
+    --warning: #ffcf6f;
+    --line: #ff2b4a1c;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+    min-height: 100%;
+    padding: 40px max(16px, env(safe-area-inset-left, 0px)) 80px max(16px, env(safe-area-inset-right, 0px));
+    overflow-x: hidden;
+  }
+
+  .stage { position: fixed; inset: 0; z-index: -1; overflow: hidden; }
+  .stage::before {
+    content: ''; position: absolute; inset: -10%;
+    background:
+      radial-gradient(circle at 18% 15%, #8a0f2430 0%, transparent 45%),
+      radial-gradient(circle at 85% 80%, #c4122f2c 0%, transparent 42%),
+      radial-gradient(circle at 50% 50%, #4a0e1618 0%, transparent 60%);
+    animation: drift 22s ease-in-out infinite alternate;
+  }
+  @keyframes drift {
+    from { transform: translate(0,0) scale(1); }
+    to   { transform: translate(-2%, 2%) scale(1.06); }
+  }
+  .grid-fade {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(to right, #ffffff08 1px, transparent 1px),
+      linear-gradient(to bottom, #ffffff08 1px, transparent 1px);
+    background-size: 42px 42px;
+    -webkit-mask-image: radial-gradient(circle at 50% 20%, black 0%, transparent 60%);
+            mask-image: radial-gradient(circle at 50% 20%, black 0%, transparent 60%);
+  }
+
+  .wrap { max-width: 980px; margin: 0 auto; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 16px;
+    margin-bottom: 36px;
+    opacity: 0; animation: rise .5s cubic-bezier(.2,.8,.2,1) .05s forwards;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand .mark {
+    width: 42px; height: 42px; border-radius: 10px;
+    object-fit: cover; object-position: 50% 20%;
+    border: 1px solid #ff2b4a3a;
+    box-shadow: 0 8px 24px -8px #c4122f90;
+  }
+  .brand h1 { font-family: 'Sora', sans-serif; font-size: 19px; font-weight: 600; }
+  .brand .sub { font-size: 12px; color: var(--ink-low); }
+
+  .status-pill {
+    display: flex; align-items: center; gap: 9px;
+    padding: 9px 16px; border-radius: 99px;
+    background: var(--bg-well); border: 1px solid var(--line);
+    font-size: 13px; font-weight: 500;
+  }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ink-low); flex-shrink: 0;
+  }
+  .status-pill.online .dot {
+    background: var(--success);
+    box-shadow: 0 0 0 0 #3fe0a560;
+    animation: pulse 1.8s ease-out infinite;
+  }
+  .status-pill.online { color: var(--success); }
+  .status-pill.offline { color: var(--danger); }
+  .status-pill.offline .dot { background: var(--danger); }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 #3fe0a560; }
+    70%  { box-shadow: 0 0 0 8px #3fe0a500; }
+    100% { box-shadow: 0 0 0 0 #3fe0a500; }
+  }
+
+  .cards {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 14px; margin-bottom: 28px;
+  }
+  .card {
+    background: var(--bg-well); border: 1px solid var(--line);
+    border-radius: 14px; padding: 20px;
+    opacity: 0; animation: rise .5s cubic-bezier(.2,.8,.2,1) forwards;
+  }
+  .cards .card:nth-child(1) { animation-delay: .08s; }
+  .cards .card:nth-child(2) { animation-delay: .14s; }
+  .cards .card:nth-child(3) { animation-delay: .20s; }
+  .cards .card:nth-child(4) { animation-delay: .26s; }
+  .card .label {
+    font-size: 11.5px; color: var(--ink-low); text-transform: uppercase;
+    letter-spacing: .06em; margin-bottom: 10px;
+  }
+  .card .value {
+    font-family: 'Sora', sans-serif; font-size: 30px; font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    display: flex; align-items: baseline; gap: 8px;
+  }
+  .card .value .unit { font-size: 13px; font-weight: 500; color: var(--ink-mid); }
+  .card .delta { font-size: 12px; margin-top: 6px; color: var(--ink-low); }
+  .card .delta.up { color: var(--success); }
+  .card .delta.down { color: var(--danger); }
+  .stars-mini { color: var(--warning); font-size: 14px; letter-spacing: 1px; }
+
+  .panel {
+    background: var(--bg-well); border: 1px solid var(--line);
+    border-radius: 16px; padding: 24px;
+    margin-bottom: 22px;
+    opacity: 0; animation: rise .5s cubic-bezier(.2,.8,.2,1) .3s forwards;
+  }
+  .panel h2 {
+    font-family: 'Sora', sans-serif; font-size: 15px; font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .panel .panel-sub { font-size: 12.5px; color: var(--ink-low); margin-bottom: 18px; }
+
+  #chart-wrap { width: 100%; overflow-x: auto; }
+  canvas#chart { display: block; width: 100%; height: 220px; }
+
+  .feedback-list { display: flex; flex-direction: column; gap: 10px; }
+  .feedback-item {
+    border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+    background: #ffffff04;
+  }
+  .feedback-item .fb-top {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; margin-bottom: 6px; flex-wrap: wrap;
+  }
+  .feedback-item .fb-user { font-weight: 600; font-size: 13.5px; }
+  .feedback-item .fb-time { font-size: 11.5px; color: var(--ink-low); font-family: 'JetBrains Mono', monospace; }
+  .feedback-item .fb-text { font-size: 13.5px; color: var(--ink-mid); line-height: 1.55; }
+  .empty-state { color: var(--ink-low); font-size: 13px; padding: 20px 0; text-align: center; }
+
+  code.cmd {
+    font-family: 'JetBrains Mono', monospace; font-size: 11.5px;
+    color: var(--accent-soft); background: #ffffff0a; padding: 2px 6px; border-radius: 4px;
+  }
+
+  footer {
+    text-align: center; font-size: 11.5px; color: var(--ink-low);
+    margin-top: 8px; line-height: 1.8;
+  }
+  footer .credit { opacity: .75; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .stage::before, .status-pill.online .dot { animation: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="stage"><div class="grid-fade"></div></div>
+
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <img class="mark" src="assets/erza.jpg" alt="Erza">
+        <div>
+          <h1>Erza</h1>
+          <div class="sub">live dashboard</div>
+        </div>
+      </div>
+      <div class="status-pill offline" id="status-pill">
+        <div class="dot"></div>
+        <span id="status-text">Checking…</span>
+      </div>
+    </header>
+
+    <div class="cards">
+      <div class="card">
+        <div class="label">Linked Accounts</div>
+        <div class="value" id="linked-count">–</div>
+      </div>
+      <div class="card">
+        <div class="label">Active Today</div>
+        <div class="value" id="today-active">–</div>
+        <div class="delta" id="today-delta"></div>
+      </div>
+      <div class="card">
+        <div class="label">Active Yesterday</div>
+        <div class="value" id="yesterday-active">–</div>
+      </div>
+      <div class="card">
+        <div class="label">Avg Rating</div>
+        <div class="value" id="avg-rating">–<span class="unit">/5</span></div>
+        <div class="delta" id="rating-count"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Active users — last 7 days</h2>
+      <div class="panel-sub">Unique accounts that ran a command each day</div>
+      <div id="chart-wrap"><canvas id="chart"></canvas></div>
+    </div>
+
+    <div class="panel">
+      <h2>Feedback</h2>
+      <div class="panel-sub">Sent via <code class="cmd">/feedback</code> in Discord</div>
+      <div class="feedback-list" id="feedback-list">
+        <div class="empty-state">Loading…</div>
+      </div>
+    </div>
+
+    <footer>Refreshes every 30s · Erza<br><span class="credit">made by Dope · powered by Anomalous Labs</span></footer>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function timeAgo(ts) {
+  const s = Math.floor(Date.now() / 1000 - ts);
+  if (s < 60) return s + 's ago';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  return Math.floor(h / 24) + 'd ago';
+}
+
+function stars(n) {
+  return '★'.repeat(n) + '☆'.repeat(5 - n);
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function drawChart(last7) {
+  const canvas = $('chart');
+  const wrap = $('chart-wrap');
+  const dpr = window.devicePixelRatio || 1;
+  const w = wrap.clientWidth;
+  const h = 220;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  const padL = 36, padR = 10, padT = 16, padB = 28;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+  const max = Math.max(1, ...last7.map(d => d.count));
+  const niceMax = Math.ceil(max / 5) * 5 || 5;
+
+  const ink = getComputedStyle(document.documentElement).getPropertyValue('--ink-low').trim();
+  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+  const line = 'rgba(255,255,255,0.08)';
+
+  // gridlines
+  ctx.strokeStyle = line;
+  ctx.lineWidth = 1;
+  ctx.font = '11px Inter, sans-serif';
+  ctx.fillStyle = ink;
+  const steps = 4;
+  for (let i = 0; i <= steps; i++) {
+    const y = padT + plotH - (plotH * i / steps);
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(w - padR, y);
+    ctx.stroke();
+    const val = Math.round(niceMax * i / steps);
+    ctx.fillText(val, 4, y + 4);
+  }
+
+  // bars
+  const n = last7.length;
+  const slot = plotW / n;
+  const barW = Math.min(36, slot * 0.5);
+
+  last7.forEach((d, i) => {
+    const cx = padL + slot * i + slot / 2;
+    const barH = (d.count / niceMax) * plotH;
+    const y = padT + plotH - barH;
+    const grad = ctx.createLinearGradient(0, y, 0, padT + plotH);
+    grad.addColorStop(0, accent);
+    grad.addColorStop(1, '#6e0a1a');
+    ctx.fillStyle = grad;
+    const r = 6;
+    const x = cx - barW / 2;
+    const bh = Math.max(barH, 2);
+    ctx.beginPath();
+    ctx.moveTo(x, y + bh);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.lineTo(x + barW - r, y);
+    ctx.quadraticCurveTo(x + barW, y, x + barW, y + r);
+    ctx.lineTo(x + barW, y + bh);
+    ctx.closePath();
+    ctx.fill();
+
+    if (d.count > 0) {
+      ctx.fillStyle = '#f1edfb';
+      ctx.font = '600 11px Sora, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(d.count, cx, y - 6);
+    }
+
+    const label = new Date(d.date + 'T00:00:00Z').toLocaleDateString(undefined, { weekday: 'short', timeZone: 'UTC' });
+    ctx.fillStyle = ink;
+    ctx.font = '11px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, cx, h - 8);
+  });
+  ctx.textAlign = 'left';
+}
+
+let lastLast7 = null;
+
+async function loadStats() {
+  try {
+    const res = await fetch('/api/stats');
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    const pill = $('status-pill');
+    const text = $('status-text');
+    if (data.online) {
+      pill.className = 'status-pill online';
+      text.textContent = 'Online';
+    } else {
+      pill.className = 'status-pill offline';
+      text.textContent = data.last_seen ? 'Offline · last seen ' + timeAgo(data.last_seen) : 'Offline';
+    }
+
+    $('linked-count').textContent = data.linked_count;
+    $('today-active').textContent = data.today_active;
+    $('yesterday-active').textContent = data.yesterday_active;
+
+    const diff = data.today_active - data.yesterday_active;
+    const deltaEl = $('today-delta');
+    if (diff > 0) { deltaEl.textContent = '+' + diff + ' vs yesterday'; deltaEl.className = 'delta up'; }
+    else if (diff < 0) { deltaEl.textContent = diff + ' vs yesterday'; deltaEl.className = 'delta down'; }
+    else { deltaEl.textContent = 'same as yesterday'; deltaEl.className = 'delta'; }
+
+    lastLast7 = data.last7;
+    drawChart(data.last7);
+  } catch (e) {
+    $('status-pill').className = 'status-pill offline';
+    $('status-text').textContent = 'Unreachable';
+  }
+}
+
+async function loadFeedback() {
+  try {
+    const res = await fetch('/api/feedback');
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    $('avg-rating').innerHTML = data.average + '<span class="unit">/5</span>';
+    $('rating-count').textContent = data.count + ' rating' + (data.count === 1 ? '' : 's');
+
+    const list = $('feedback-list');
+    if (!data.recent.length) {
+      list.innerHTML = '<div class="empty-state">No feedback yet — be the first with <code class="cmd">/feedback</code>.</div>';
+      return;
+    }
+    list.innerHTML = data.recent.map(f => `
+      <div class="feedback-item">
+        <div class="fb-top">
+          <span class="fb-user">${escapeHtml(f.username || 'unknown')} <span class="stars-mini">${stars(f.rating)}</span></span>
+          <span class="fb-time">${timeAgo(f.ts)}</span>
+        </div>
+        <div class="fb-text">${escapeHtml(f.text || '')}</div>
+      </div>
+    `).join('');
+  } catch (e) {
+    $('feedback-list').innerHTML = '<div class="empty-state">Couldn\'t load feedback.</div>';
+  }
+}
+
+function refreshAll() {
+  loadStats();
+  loadFeedback();
+}
+
+window.addEventListener('resize', () => { if (lastLast7) drawChart(lastLast7); });
+
+refreshAll();
+setInterval(refreshAll, 30000);
+</script>
+</body>
+</html>
