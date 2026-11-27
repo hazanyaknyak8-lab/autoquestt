@@ -1,0 +1,6 @@
+{
+  "rewrites": [
+    { "source": "/api/stats",    "destination": "/api/stats.py" },
+    { "source": "/api/feedback", "destination": "/api/feedback.py" }
+  ]
+}
