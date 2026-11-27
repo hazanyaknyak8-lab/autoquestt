@@ -1,10 +1,5 @@
 {
   "rewrites": [
-    { "source": "/api/callback", "destination": "/api/callback" }
-  ],
-  "functions": {
-    "api/callback.py": { "runtime": "python3.12" },
-    "api/stats.py":    { "runtime": "python3.12" },
-    "api/feedback.py": { "runtime": "python3.12" }
-  }
+    { "source": "/api/(.*)", "destination": "/api/$1" }
+  ]
 }
