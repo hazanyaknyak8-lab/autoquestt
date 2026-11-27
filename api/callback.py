@@ -243,10 +243,14 @@ class handler(BaseHTTPRequestHandler):
 
         # debug route — shows what env vars the function actually sees
         if params.get("debug") == "1":
+            if CLIENT_SECRET:
+                secret_hint = f"set, len={len(CLIENT_SECRET)}, starts={CLIENT_SECRET[:4]}..ends={CLIENT_SECRET[-4:]}"
+            else:
+                secret_hint = "(not set)"
             self._html(_page(
                 "Debug Info",
                 f"<p><strong>CLIENT_ID:</strong> <code>{CLIENT_ID or '(not set)'}</code></p>"
-                f"<p><strong>CLIENT_SECRET:</strong> <code>{'set, len=' + str(len(CLIENT_SECRET)) if CLIENT_SECRET else '(not set)'}</code></p>"
+                f"<p><strong>CLIENT_SECRET:</strong> <code>{secret_hint}</code></p>"
                 f"<p><strong>REDIRECT_URI:</strong> <code>{REDIRECT_URI or '(not set)'}</code></p>"
                 f"<p><strong>UPSTASH_URL:</strong> <code>{'set' if UPSTASH_URL else '(not set)'}</code></p>",
             ))
