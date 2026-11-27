@@ -79,13 +79,13 @@ def _push_result(uid: str, payload: dict):
 # Discord HTTP helpers (sync)
 # ---------------------------------------------------------------------------
 
-def _exchange_code(code: str) -> dict:
+def _exchange_code(code: str, redirect_uri: str = None) -> dict:
     data = urlencode({
         "client_id": CLIENT_ID,
         "client_secret": CLIENT_SECRET,
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": redirect_uri or REDIRECT_URI,
     }).encode()
     req = urllib.request.Request(
         DISCORD_TOKEN_URL,
@@ -287,7 +287,8 @@ class handler(BaseHTTPRequestHandler):
         if not uid:
             self._html(_page(
                 "Session Not Found",
-                "<p>This link is invalid or already used. Use <code>/link</code> in Discord to get a fresh one.</p>",
+                f"<p>state received: <code>{state[:20]}...</code></p>"
+                f"<p>This link is invalid or already used. Use <code>/link</code> in Discord to get a fresh one.</p>",
                 is_error=True,
             ))
             return
@@ -295,10 +296,12 @@ class handler(BaseHTTPRequestHandler):
         _del_state(state)  # one-time use
 
         # --- exchange code ---
+        # Strip iss param Discord adds — not part of redirect_uri
+        clean_redirect = REDIRECT_URI.split("?")[0]
         try:
-            token_data = _exchange_code(code)
+            token_data = _exchange_code(code, clean_redirect)
         except Exception as e:
-            self._html(_page("OAuth Failed", f"<p>Discord said: <code>{e}</code></p><p>REDIRECT_URI used: <code>{REDIRECT_URI}</code></p><p>CLIENT_ID used: <code>{CLIENT_ID}</code></p>", is_error=True))
+            self._html(_page("OAuth Failed", f"<p>Discord said: <code>{e}</code></p><p>REDIRECT_URI used: <code>{clean_redirect}</code></p><p>CLIENT_ID used: <code>{CLIENT_ID}</code></p>", is_error=True))
             return
 
         access_token  = token_data.get("access_token")
