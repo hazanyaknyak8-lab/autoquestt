@@ -240,6 +240,18 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed   = urlparse(self.path)
         params   = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+
+        # debug route — shows what env vars the function actually sees
+        if params.get("debug") == "1":
+            self._html(_page(
+                "Debug Info",
+                f"<p><strong>CLIENT_ID:</strong> <code>{CLIENT_ID or '(not set)'}</code></p>"
+                f"<p><strong>CLIENT_SECRET:</strong> <code>{'set, len=' + str(len(CLIENT_SECRET)) if CLIENT_SECRET else '(not set)'}</code></p>"
+                f"<p><strong>REDIRECT_URI:</strong> <code>{REDIRECT_URI or '(not set)'}</code></p>"
+                f"<p><strong>UPSTASH_URL:</strong> <code>{'set' if UPSTASH_URL else '(not set)'}</code></p>",
+            ))
+            return
+
         code     = params.get("code")
         state    = params.get("state")
         error    = params.get("error")
