@@ -98,7 +98,7 @@ def _exchange_code(code: str) -> dict:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="ignore")
-        raise RuntimeError(f"token exchange {e.code}: {body}")
+        raise RuntimeError(f"token exchange {e.code}: FULL_BODY={body} | sent_client_id={CLIENT_ID} | sent_redirect={REDIRECT_URI} | secret_starts={CLIENT_SECRET[:4] if CLIENT_SECRET else 'NONE'}")
 
 
 def _get_me(access_token: str) -> dict:
