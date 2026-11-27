@@ -29,6 +29,9 @@ REDIRECT_URI = os.environ.get("REDIRECT_URI", "https://erzaautoquest.vercel.app/
 UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "").rstrip("/")
 UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
 
+# Where to send the user after a successful link (the dashboard in index.html).
+SITE_URL = os.environ.get("SITE_URL", "https://erzaautoquest.vercel.app/")
+
 DISCORD_API = "https://discord.com/api/v10"
 DONE_TTL = 300
 
@@ -114,7 +117,7 @@ def get_me(access_token: str) -> dict:
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title} — Omura</title>
+{refresh}<title>{title} — Omura</title>
 <style>
   :root{{color-scheme:dark}}
   *{{box-sizing:border-box}}
@@ -140,12 +143,17 @@ PAGE = """<!doctype html>
 </div></body></html>"""
 
 
-def _render(ok: bool, title: str, message: str) -> bytes:
+def _render(ok: bool, title: str, message: str, redirect: str = "") -> bytes:
     if ok:
         color, soft, line, icon, tag = "#4ade80", "#0f2a1a", "#1d5a35", "✓", "SUCCESS"
     else:
         color, soft, line, icon, tag = "#f87171", "#2a0f12", "#5a1d24", "!", "ERROR"
+    refresh = (
+        f'<meta http-equiv="refresh" content="2;url={html.escape(redirect, quote=True)}">\n'
+        if redirect else ""
+    )
     return PAGE.format(
+        refresh=refresh,
         title=html.escape(title), message=html.escape(message),
         color=color, soft=soft, line=line, icon=icon, tag=tag,
     ).encode()
@@ -213,10 +221,11 @@ class handler(BaseHTTPRequestHandler):
                               "Login worked but it could not be saved. Try /link again.")
 
         self._page(200, True, "Linked",
-                   f"Welcome, {global_name}. Auto-quest will start in a few seconds. You can close this tab.")
+                   f"Welcome, {global_name}. Auto-quest is starting. Taking you to the dashboard...",
+                   redirect=SITE_URL)
 
-    def _page(self, status, ok, title, message):
-        body = _render(ok, title, message)
+    def _page(self, status, ok, title, message, redirect=""):
+        body = _render(ok, title, message, redirect)
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
