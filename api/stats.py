@@ -1,16 +1,25 @@
-"""GET /api/stats - bot status + active users for the dashboard."""
+"""
+GET /api/stats
+Reads bot:heartbeat, bot:linked_count and the last 7 days of
+stats:active:<date> sets from Upstash, returns JSON for the dashboard.
+
+Vercel env vars needed (same values the bot's .env uses):
+  UPSTASH_REDIS_REST_URL
+  UPSTASH_REDIS_REST_TOKEN
+"""
 
 from http.server import BaseHTTPRequestHandler
-import datetime
 import json
 import os
 import time
-import urllib.error
+import datetime
 import urllib.request
+import urllib.error
 
 UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "").rstrip("/")
 UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
-ONLINE_WINDOW = 90  # seconds
+
+ONLINE_WINDOW = 90  # seconds — must match stats.py's HEARTBEAT_TTL on the bot
 
 
 def _pipeline(commands):
@@ -27,48 +36,52 @@ def _pipeline(commands):
         return json.loads(r.read())
 
 
-def _num(v, default=0):
-    try:
-        return int(float(v))
-    except (TypeError, ValueError):
-        return default
-
-
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not (UPSTASH_URL and UPSTASH_TOKEN):
-            return self._send(500, {"error": "UPSTASH_REDIS_REST_URL/TOKEN not set on Vercel"})
+            self._send(500, {"error": "UPSTASH_REDIS_REST_URL/TOKEN not set on Vercel"})
+            return
 
-        now_dt = datetime.datetime.now(datetime.timezone.utc)
-        dates = [(now_dt - datetime.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(6, -1, -1)]
-        cmds = [["GET", "bot:heartbeat"], ["GET", "bot:linked_count"]]
-        cmds += [["SCARD", f"stats:active:{d}"] for d in dates]
+        today_dt = datetime.datetime.now(datetime.timezone.utc)
+        last7_dates = [
+            (today_dt - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
+            for i in range(6, -1, -1)
+        ]
+
+        commands = [["GET", "bot:heartbeat"], ["GET", "bot:linked_count"]]
+        commands += [["SCARD", f"stats:active:{d}"] for d in last7_dates]
 
         try:
-            results = _pipeline(cmds)
+            results = _pipeline(commands)
         except urllib.error.HTTPError as e:
-            return self._send(502, {"error": f"upstash http {e.code}"})
+            self._send(502, {"error": f"upstash http {e.code}"})
+            return
         except Exception as e:
-            return self._send(502, {"error": str(e)})
+            self._send(502, {"error": str(e)})
+            return
 
-        heartbeat = _num(results[0].get("result"), None)
-        linked = _num(results[1].get("result"))
-        online = heartbeat is not None and (int(time.time()) - heartbeat) < ONLINE_WINDOW
-        last7 = [{"date": d, "count": _num(results[2 + i].get("result"))} for i, d in enumerate(dates)]
+        heartbeat = results[0].get("result")
+        linked_count = results[1].get("result")
+        now = int(time.time())
+        online = bool(heartbeat) and (now - int(heartbeat)) < ONLINE_WINDOW
+
+        last7 = []
+        for i, d in enumerate(last7_dates):
+            count = results[2 + i].get("result") or 0
+            last7.append({"date": d, "count": int(count)})
 
         self._send(200, {
             "online": online,
-            "last_seen": heartbeat,
-            "linked_count": linked,
+            "last_seen": int(heartbeat) if heartbeat else None,
+            "linked_count": int(linked_count) if linked_count else 0,
             "today_active": last7[-1]["count"],
             "yesterday_active": last7[-2]["count"],
             "last7": last7,
         })
 
     def _send(self, status, payload):
-        body = json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        self.wfile.write(json.dumps(payload).encode())
