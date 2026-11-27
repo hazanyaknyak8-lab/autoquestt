@@ -1,360 +1,224 @@
-# api/callback.py  — Vercel serverless function
 """
-Handles Discord OAuth callback at https://erzaautoquest.vercel.app/api/callback
+GET /api/callback
+Discord OAuth2 redirect target (Vercel).
 
 Flow:
-  1. Discord redirects here with ?code=&state=
-  2. We read state -> uid from Upstash (put there by generate_link_url)
-  3. Exchange code for access_token + refresh_token with Discord
-  4. Push result to Upstash key oauth:done:{uid} (TTL 300s)
-  5. Bot polls that key, picks it up, starts heartbeat
-  6. Render success/error HTML to user
+  1. Discord redirects here with ?code=...&state=...
+  2. state -> uid is read (and deleted) from Upstash  (oauth:state:<state>)
+  3. code is exchanged for tokens at Discord
+  4. result is stored at oauth:done:<uid> for the bot's poll loop to pick up
 
-Vercel env vars required:
-  UPSTASH_REDIS_REST_URL
-  UPSTASH_REDIS_REST_TOKEN
-  CLIENT_ID
-  CLIENT_SECRET
-  REDIRECT_URI   (must be https://erzaautoquest.vercel.app/api/callback)
+Vercel env vars:
+  CLIENT_ID, CLIENT_SECRET, REDIRECT_URI (optional),
+  UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN
 """
 
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import urlencode, urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs
+import html
 import json
 import os
+import urllib.parse
 import urllib.request
 import urllib.error
-import urllib.parse
 
-UPSTASH_URL   = os.environ.get("UPSTASH_REDIS_REST_URL", "").rstrip("/")
+CLIENT_ID = os.environ.get("CLIENT_ID", "")
+CLIENT_SECRET = os.environ.get("CLIENT_SECRET") or os.environ.get("DISCORD_CLIENT_SECRET", "")
+REDIRECT_URI = os.environ.get("REDIRECT_URI", "https://erzaautoquest.vercel.app/api/callback")
+
+UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "").rstrip("/")
 UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
-CLIENT_ID     = os.environ.get("CLIENT_ID", "")
-CLIENT_SECRET = os.environ.get("CLIENT_SECRET", "")
-REDIRECT_URI  = os.environ.get("REDIRECT_URI", "https://erzaautoquest.vercel.app/api/callback")
-DISCORD_TOKEN_URL = "https://discord.com/api/v10/oauth2/token"
-DISCORD_ME_URL    = "https://discord.com/api/v10/users/@me"
+
+DISCORD_API = "https://discord.com/api/v10"
+DONE_TTL = 300
+
+# IMPORTANT: Discord sits behind Cloudflare, which blocks the default
+# "Python-urllib/x.y" User-Agent with `error code: 1010`. Always send a real one.
+USER_AGENT = "DiscordBot (https://erzaautoquest.vercel.app, 1.0)"
 
 
 # ---------------------------------------------------------------------------
-# Upstash helpers (sync urllib only — no aiohttp in Vercel serverless)
+# Upstash
 # ---------------------------------------------------------------------------
 
-def _upstash(method: str, *args):
-    """Single Upstash REST command. Returns result value or raises."""
-    cmd = [method] + list(args)
+def _upstash(*cmd):
     req = urllib.request.Request(
         f"{UPSTASH_URL}/pipeline",
-        data=json.dumps([cmd]).encode(),
+        data=json.dumps([[str(c) for c in cmd]]).encode(),
         headers={
             "Authorization": f"Bearer {UPSTASH_TOKEN}",
             "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
         },
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=8) as r:
-        body = json.loads(r.read())
-    # pipeline returns list of {result, error}
-    item = body[0]
+        item = json.loads(r.read())[0]
     if item.get("error"):
-        raise RuntimeError(f"Upstash error: {item['error']}")
+        raise RuntimeError(f"upstash: {item['error']}")
     return item.get("result")
 
 
-def _get_state(state: str):
-    """Returns uid string or None."""
-    val = _upstash("GET", f"oauth:state:{state}")
-    return val  # already a string or None
-
-
-def _del_state(state: str):
-    _upstash("DEL", f"oauth:state:{state}")
-
-
-def _push_result(uid: str, payload: dict):
-    """Store completed OAuth result for bot to pick up. TTL 300s."""
-    _upstash("SET", f"oauth:done:{uid}", json.dumps(payload), "EX", "300")
-
-
 # ---------------------------------------------------------------------------
-# Discord HTTP helpers (sync)
+# Discord
 # ---------------------------------------------------------------------------
 
-def _exchange_code(code: str, redirect_uri: str = None) -> dict:
-    data = urlencode({
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": redirect_uri or REDIRECT_URI,
-    }).encode()
-    req = urllib.request.Request(
-        DISCORD_TOKEN_URL,
-        data=data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
-    )
+def _discord_request(req: urllib.request.Request) -> dict:
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
-        body = e.read().decode(errors="ignore")
-        raise RuntimeError(f"token exchange {e.code}: FULL_BODY={body} | sent_client_id={CLIENT_ID} | sent_redirect={REDIRECT_URI} | secret_starts={CLIENT_SECRET[:4] if CLIENT_SECRET else 'NONE'}")
+        body = e.read().decode(errors="ignore")[:300]
+        # Full detail goes to Vercel logs only, never to the visitor.
+        print(f"[callback] discord http {e.code}: {body}")
+        raise RuntimeError(f"Discord returned HTTP {e.code}")
 
 
-def _get_me(access_token: str) -> dict:
+def exchange_code(code: str) -> dict:
+    data = urllib.parse.urlencode({
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": REDIRECT_URI,
+    }).encode()
     req = urllib.request.Request(
-        DISCORD_ME_URL,
-        headers={"Authorization": f"Bearer {access_token}"},
+        f"{DISCORD_API}/oauth2/token",
+        data=data,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+        },
+        method="POST",
     )
-    with urllib.request.urlopen(req, timeout=8) as r:
-        return json.loads(r.read())
+    return _discord_request(req)
+
+
+def get_me(access_token: str) -> dict:
+    req = urllib.request.Request(
+        f"{DISCORD_API}/users/@me",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+        },
+    )
+    return _discord_request(req)
 
 
 # ---------------------------------------------------------------------------
-# Page renderer
+# Page
 # ---------------------------------------------------------------------------
 
-def _page(title: str, body_html: str, is_error: bool = False) -> str:
-    accent = "#ff4747" if is_error else "#3fe0a5"
-    icon_check = (
-        '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.5" '
-        'stroke-linecap="round" stroke-linejoin="round">'
-        '<path d="M20 6L9 17l-5-5"/></svg>'
-    )
-    icon_warn = (
-        '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.5" '
-        'stroke-linecap="round" stroke-linejoin="round">'
-        '<path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94'
-        'a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>'
-    )
-    icon = icon_warn if is_error else icon_check
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title} — Omura</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  :root {{
-    --bg:#08060f; --bg-well:#0d0a18; --accent:{accent};
-    --ink:#f1edfb; --ink-mid:#a99ecb; --ink-low:#655c82; --line:#ffffff17;
-    box-sizing:border-box;
-    padding-top:env(safe-area-inset-top,0px);
-    padding-bottom:env(safe-area-inset-bottom,0px);
-  }}
-  *{{box-sizing:border-box;margin:0;padding:0}}
-  html,body{{height:100%}}
-  body{{
-    font-family:'Inter',system-ui,sans-serif;
-    color:var(--ink);background:var(--bg);
-    min-height:100%;
-    display:flex;align-items:center;justify-content:center;
-    padding:32px 16px;
-  }}
-  .stage{{position:fixed;inset:0;z-index:-1;overflow:hidden}}
-  .stage::before{{
-    content:'';position:absolute;inset:-10%;
-    background:
-      radial-gradient(circle at 20% 20%,#4b2aa815 0%,transparent 50%),
-      radial-gradient(circle at 80% 80%,{accent}18 0%,transparent 45%);
-  }}
-  .grid-fade{{
-    position:absolute;inset:0;
-    background-image:linear-gradient(to right,#ffffff08 1px,transparent 1px),
-                     linear-gradient(to bottom,#ffffff08 1px,transparent 1px);
-    background-size:42px 42px;
-    -webkit-mask-image:radial-gradient(circle at 50% 40%,black 0%,transparent 65%);
-            mask-image:radial-gradient(circle at 50% 40%,black 0%,transparent 65%);
-  }}
-  .card{{
-    width:100%;max-width:420px;
-    padding:40px 36px 32px;
-    border-radius:20px;
-    background:var(--bg-well);border:1px solid var(--line);
-    box-shadow:0 32px 80px -20px #00000099;
-    opacity:0;animation:rise .45s cubic-bezier(.2,.8,.2,1) forwards;
-  }}
-  @keyframes rise{{from{{opacity:0;transform:translateY(16px)}}to{{opacity:1;transform:none}}}}
-  .icon{{
-    width:52px;height:52px;border-radius:16px;
-    background:{accent}22;border:1px solid {accent}44;
-    display:flex;align-items:center;justify-content:center;
-    margin-bottom:22px;
-  }}
-  .icon svg{{width:24px;height:24px;stroke:var(--accent)}}
-  .pill{{
-    display:inline-flex;align-items:center;gap:6px;
-    background:{accent}18;border:1px solid {accent}33;
-    border-radius:999px;padding:4px 12px;
-    font-size:12px;font-weight:600;color:var(--accent);
-    margin-bottom:18px;letter-spacing:.03em;text-transform:uppercase;
-  }}
-  h1{{font-family:'Sora',sans-serif;font-size:24px;font-weight:700;margin-bottom:10px;line-height:1.2}}
-  p{{color:var(--ink-mid);font-size:14px;line-height:1.7;margin-bottom:10px}}
-  p strong{{color:var(--ink);font-weight:600}}
-  .steps{{
-    margin:18px 0;padding:16px 18px;
-    background:#ffffff07;border:1px solid var(--line);border-radius:12px;
-    display:flex;flex-direction:column;gap:10px;
-  }}
-  .step{{display:flex;align-items:flex-start;gap:12px;font-size:13px;color:var(--ink-mid)}}
-  .step-num{{
-    min-width:22px;height:22px;border-radius:50%;
-    background:{accent}22;border:1px solid {accent}44;
-    color:var(--accent);font-size:11px;font-weight:700;
-    display:flex;align-items:center;justify-content:center;flex-shrink:0;
-    margin-top:1px;
-  }}
-  .step-txt{{line-height:1.5}}
-  .step-txt strong{{color:var(--ink);font-weight:600}}
-  code{{
-    font-family:'JetBrains Mono',monospace;font-size:12px;
-    color:#c3b3ff;background:#ffffff0a;padding:2px 7px;border-radius:5px;
-  }}
-  .foot{{margin-top:24px;font-size:11.5px;color:var(--ink-low)}}
-  .divider{{height:1px;background:var(--line);margin:16px 0}}
-</style>
-</head>
-<body>
-<div class="stage"><div class="grid-fade"></div></div>
+  :root{{color-scheme:dark}}
+  *{{box-sizing:border-box}}
+  body{{margin:0;min-height:100vh;display:grid;place-items:center;
+        background:radial-gradient(circle at 80% 90%,#1a0a0e,#07070d 60%);
+        font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#e8e8f0}}
+  .card{{width:min(420px,92vw);padding:32px;border-radius:24px;
+        background:#0c0c16;border:1px solid #1e1e2e}}
+  .icon{{width:48px;height:48px;border-radius:14px;display:grid;place-items:center;
+        font-size:22px;background:{soft};border:1px solid {line};margin-bottom:18px}}
+  .tag{{display:inline-block;padding:3px 12px;border-radius:99px;font-size:11px;
+        letter-spacing:.08em;color:{color};background:{soft};border:1px solid {line}}}
+  h1{{margin:14px 0 8px;font-size:26px}}
+  p{{margin:0;color:#9a9ab0;line-height:1.55;font-size:14px}}
+  .foot{{margin-top:28px;font-size:11px;color:#55556a}}
+</style></head><body>
 <div class="card">
   <div class="icon">{icon}</div>
-  <div class="pill">{'Error' if is_error else 'Omura Auto Quest'}</div>
+  <span class="tag">{tag}</span>
   <h1>{title}</h1>
-  {body_html}
+  <p>{message}</p>
   <div class="foot">Omura Auto Quest — made by Dope · powered by Anomalous Labs</div>
-</div>
-</body>
-</html>"""
+</div></body></html>"""
+
+
+def _render(ok: bool, title: str, message: str) -> bytes:
+    if ok:
+        color, soft, line, icon, tag = "#4ade80", "#0f2a1a", "#1d5a35", "✓", "SUCCESS"
+    else:
+        color, soft, line, icon, tag = "#f87171", "#2a0f12", "#5a1d24", "!", "ERROR"
+    return PAGE.format(
+        title=html.escape(title), message=html.escape(message),
+        color=color, soft=soft, line=line, icon=icon, tag=tag,
+    ).encode()
 
 
 # ---------------------------------------------------------------------------
-# Main handler
+# Handler
 # ---------------------------------------------------------------------------
 
 class handler(BaseHTTPRequestHandler):
-
     def do_GET(self):
-        parsed   = urlparse(self.path)
-        params   = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+        q = parse_qs(urlparse(self.path).query)
+        code = (q.get("code") or [""])[0]
+        state = (q.get("state") or [""])[0]
 
-        # debug route — shows what env vars the function actually sees
-        if params.get("debug") == "1":
-            if CLIENT_SECRET:
-                secret_hint = f"set, len={len(CLIENT_SECRET)}, starts={CLIENT_SECRET[:4]}..ends={CLIENT_SECRET[-4:]}"
-            else:
-                secret_hint = "(not set)"
-            self._html(_page(
-                "Debug Info",
-                f"<p><strong>CLIENT_ID:</strong> <code>{CLIENT_ID or '(not set)'}</code></p>"
-                f"<p><strong>CLIENT_SECRET:</strong> <code>{secret_hint}</code></p>"
-                f"<p><strong>REDIRECT_URI:</strong> <code>{REDIRECT_URI or '(not set)'}</code></p>"
-                f"<p><strong>UPSTASH_URL:</strong> <code>{'set' if UPSTASH_URL else '(not set)'}</code></p>",
-            ))
-            return
+        if q.get("error"):
+            return self._page(400, False, "Authorization Cancelled",
+                              "You cancelled the authorization. Run /link again to retry.")
 
-        code     = params.get("code")
-        state    = params.get("state")
-        error    = params.get("error")
+        if not (code and state):
+            return self._page(400, False, "Invalid Request",
+                              "Missing code or state. Run /link in Discord to start again.")
 
-        # --- user denied ---
-        if error:
-            self._html(_page(
-                "Authorization Denied",
-                "<p>You didn't authorize Omura. Close this tab and use <code>/link</code> again if you change your mind.</p>",
-                is_error=True,
-            ))
-            return
+        if not (CLIENT_ID and CLIENT_SECRET and UPSTASH_URL and UPSTASH_TOKEN):
+            print("[callback] missing env vars")
+            return self._page(500, False, "Server Misconfigured",
+                              "The server is missing configuration. Please tell the bot owner.")
 
-        if not code:
-            self._html(_page("Missing Code", "<p>No authorization code received. Try <code>/link</code> again.</p>", is_error=True))
-            return
-
-        if not state:
-            self._html(_page("Missing State", "<p>Invalid callback. Use <code>/link</code> again.</p>", is_error=True))
-            return
-
-        # --- state lookup ---
+        # state -> uid (one use)
         try:
-            uid = _get_state(state)
+            uid = _upstash("GETDEL", f"oauth:state:{state}")
         except Exception as e:
-            self._html(_page("Server Error", f"<p>Redis lookup failed: <code>{e}</code></p>", is_error=True))
-            return
-
+            print(f"[callback] state lookup failed: {e}")
+            return self._page(502, False, "Storage Error",
+                              "Could not verify your session. Try /link again.")
         if not uid:
-            self._html(_page(
-                "Session Not Found",
-                f"<p>state received: <code>{state[:20]}...</code></p>"
-                f"<p>This link is invalid or already used. Use <code>/link</code> in Discord to get a fresh one.</p>",
-                is_error=True,
-            ))
-            return
+            return self._page(400, False, "Session Expired",
+                              "This link expired or was already used. Run /link again.")
 
-        _del_state(state)  # one-time use
-
-        # --- exchange code ---
-        # Strip iss param Discord adds — not part of redirect_uri
-        clean_redirect = REDIRECT_URI.split("?")[0]
+        # code -> tokens
         try:
-            token_data = _exchange_code(code, clean_redirect)
+            tok = exchange_code(code)
+            access_token = tok.get("access_token")
+            if not access_token:
+                raise RuntimeError("no access_token in response")
+            try:
+                global_name = get_me(access_token).get("global_name") or "Unknown"
+            except Exception:
+                global_name = "Unknown"
         except Exception as e:
-            self._html(_page("OAuth Failed", f"<p>Discord said: <code>{e}</code></p><p>REDIRECT_URI used: <code>{clean_redirect}</code></p><p>CLIENT_ID used: <code>{CLIENT_ID}</code></p>", is_error=True))
-            return
+            print(f"[callback] exchange failed uid={uid}: {e}")
+            return self._page(502, False, "OAuth Failed",
+                              "Discord rejected the login. Run /link again. If it keeps failing, tell the bot owner.")
 
-        access_token  = token_data.get("access_token")
-        refresh_token = token_data.get("refresh_token", "")
-
-        if not access_token:
-            self._html(_page("OAuth Failed", "<p>No access token returned. Try <code>/link</code> again.</p>", is_error=True))
-            return
-
-        # --- verify identity ---
+        # hand off to the bot
         try:
-            user = _get_me(access_token)
+            _upstash("SET", f"oauth:done:{uid}", json.dumps({
+                "access_token": access_token,
+                "refresh_token": tok.get("refresh_token", ""),
+                "global_name": global_name,
+            }), "EX", DONE_TTL)
         except Exception as e:
-            self._html(_page("Verification Failed", f"<p>Couldn't verify identity: <code>{e}</code></p>", is_error=True))
-            return
+            print(f"[callback] handoff failed uid={uid}: {e}")
+            return self._page(502, False, "Storage Error",
+                              "Login worked but it could not be saved. Try /link again.")
 
-        global_name = user.get("global_name") or user.get("username") or "Unknown"
-        username    = user.get("username", "unknown")
+        self._page(200, True, "Linked",
+                   f"Welcome, {global_name}. Auto-quest will start in a few seconds. You can close this tab.")
 
-        # --- push to Upstash for bot to pick up ---
-        try:
-            _push_result(uid, {
-                "access_token":  access_token,
-                "refresh_token": refresh_token,
-                "username":      username,
-                "global_name":   global_name,
-                "discord_id":    user.get("id", ""),
-            })
-        except Exception as e:
-            self._html(_page("Server Error", f"<p>Failed to store session: <code>{e}</code></p>", is_error=True))
-            return
-
-        # --- success page ---
-        body = f"""
-<p>Signed in as <strong>{global_name}</strong>.</p>
-<div class="divider"></div>
-<div class="steps">
-  <div class="step"><div class="step-num">1</div><div class="step-txt"><strong>Auto-quest is starting</strong> — the bot picks up your session within seconds.</div></div>
-  <div class="step"><div class="step-num">2</div><div class="step-txt">You'll get a <strong>DM</strong> when all quests are claimed.</div></div>
-  <div class="step"><div class="step-num">3</div><div class="step-txt">Use <code>/quests</code> to check progress or <code>/unlink</code> to stop at any time.</div></div>
-</div>
-<p>You can close this tab.</p>
-"""
-        self._html(_page("You're linked ✓", body))
-
-    def _html(self, body: str):
-        encoded = body.encode()
-        self.send_response(200)
+    def _page(self, status, ok, title, message):
+        body = _render(ok, title, message)
+        self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(encoded)
-
-    def log_message(self, *args):
-        pass  # silence Vercel access log spam
+        self.wfile.write(body)
